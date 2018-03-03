@@ -239,8 +239,41 @@ int main(int argc, char** argv)
     TRISCbits.TRISC7 = 0;     //  Test Point 2
     TRISCbits.TRISC8 = 0;     //  Test Point 3   
 
+
+    // Power-off all unused peripherals.
+    PMD1bits.T5MD = 1;      // Timers
+    PMD1bits.T4MD = 1;
+    PMD1bits.T3MD = 0;      // Used to clock ADC.
+    PMD1bits.T2MD = 1;
+    PMD1bits.T1MD = 1;
+    PMD1bits.DCIMD = 1;     // DCI
+    PMD1bits.I2C1MD = 1;    // I2C
+    PMD1bits.U2MD = 1;      // Uarts
+    PMD1bits.U1MD = 1;
+    PMD1bits.SPI2MD = 1;    // SPIs
+    PMD1bits.SPI1MD = 1;
+    PMD1bits.C1MD = 1;      // ECAN
+    PMD1bits.AD1MD = 0;     // ADC is used.
+    
+    PMD2bits.IC8MD = 1;     // Input Captures
+    PMD2bits.IC7MD = 1;
+    PMD2bits.IC2MD = 1;
+    PMD2bits.IC1MD = 1;
+    PMD2bits.OC4MD = 1;     // Output Compares
+    PMD2bits.OC3MD = 1;
+    PMD2bits.OC2MD = 1;
+    PMD2bits.OC1MD = 1;
+
+    PMD3bits.CMPMD = 1;     // Comparator
+    PMD3bits.RTCCMD = 1;    // Real time clock
+    PMD3bits.PMPMD = 1;     // Parallel master port
+    PMD3bits.CRCMD = 1;     // CRC generator
+    PMD3bits.DAC1MD = 0;    // DAC is used. (duh)
+
+
     //   Set up the DACs
     DAC1CONbits.DACEN = 1;    // enable the audio dac
+    DAC1CONbits.DACSIDL = 0;  // continue operation in idle mode
     DAC1CONbits.AMPON = 1;    // enable the output amplifier
     DAC1CONbits.FORM = 0;     //  unsigned data (0 = unsigned data)
     
@@ -370,7 +403,8 @@ int main(int argc, char** argv)
 
     while (1)   // Loop Endlessly - Execution is interrupt driven
     {
-
+        Idle(); // Go to low power mode until woken up by the DAC interrupt.
+        
         //   Turns out that if you just toggle a bit fast the LED doesn't
         //   respond AT ALL (RC issues - the 220 ohm ballast resistance and the LED's
         //   capacitance form an RC filter and the output voltage never gets high
