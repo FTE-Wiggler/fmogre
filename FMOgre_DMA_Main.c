@@ -117,7 +117,7 @@ void __attribute__((__interrupt__,__auto_psv__)) _DAC1RInterrupt(void)
 
     long cvpm = 2047 - (signed)cvdata[CVDATA_PM];   // Symmetric about zero. TODO: low pass filter this.
     long cvpmknob = cvdata[CVDATA_PMKNOB];          // Positive value.  TODO: filter the shit out of this.
-    long phasemod = RESOLUTIONSWITCH ? 0 : (cvpm * cvpmknob) << 8;
+    long phasemod = RESOLUTIONSWITCH ? 0 : (cvpm * cvpmknob) << 10;
     long altphasemod = (cvpm * cvpmknob) + 256;
     
     unsigned long final_phase_fm_fb_pm = final_phase_fm_feedback + phasemod;
@@ -196,10 +196,9 @@ int main(int argc, char** argv)
     while(OSCCONbits.LOCK!=1) {};
 
     //   Set up aux oscillator channel
-    ACLKCONbits.SELACLK = 0;    //   Aux oscillator from Main Fosc;
-    ACLKCONbits.APSTSCLR = 6;   //  was 6: Divide by 2 - gets 40 MHz to the DAC;
-                                //  use 6 to get 83333 hz DAC output rate (measured @ 40 MHz inst)
-    ACLKCONbits.ASRCSEL = 0;    //    use primary clock as source (but doesn't matter)
+    ACLKCONbits.SELACLK = 0;    //   Aux oscillator from Main Fosc (80 MHz as set above);
+    ACLKCONbits.APSTSCLR = 6;   //   6: Divide by 2 - gets 40 MHz to the DAC;
+    ACLKCONbits.ASRCSEL = 0;    //    use primary clock as source (not relevant when SELACLK = 0)
 
 
     //   Set up which pins are digital in and out
@@ -249,8 +248,8 @@ int main(int argc, char** argv)
     //    CHANGE THE DACFDIV TO CHANGE SAMPLING RATE
     //        Fs = Fcy / (256 * (DACFDIV + 1))
     //
-    //    DACFDIV      Fs
-    //    ------------------
+    //    DACFDIV      Fs (assuming Fcy = 40 MHz)
+    //    ---------------------------------------
     //      1          78125
     //      2          52083.3333
     //      3          39062.5000
@@ -258,7 +257,7 @@ int main(int argc, char** argv)
     //      5          26041.6666
     //      6          22321.42857
     
-    #define MY_DACFDIV  6
+    #define MY_DACFDIV  3
     
     DAC1CONbits.DACFDIV = MY_DACFDIV; 
     DAC1STAT = 0xFFFF;        //  everything on
