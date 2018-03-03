@@ -38,102 +38,88 @@ _FOSC (POSCMD_XT & OSCIOFNC_OFF & IOL1WAY_OFF & FCKSM_CSECME)
 #pragma config JTAGEN = OFF             // JTAG Port Enable (JTAG is Disabled)
 
 
-#define LFOSWITCH PORTAbits.RA8
-#define RESOLUTIONSWITCH PORTBbits.RB4
-#define SAMPLESWITCH PORTAbits.RA4
-
-//     FM state variables
-volatile unsigned long curbasephase;
-volatile long curpitchval;
-volatile long curpitchincr;
-volatile long curfreqmod;
-volatile long cvpm_dv, old_cvpm, older_cvpm, cvpm_predicted, cvpm_errpredmult;
-volatile long curphasemod;
-volatile long curaltphasemod;
-volatile long curresolution;
-volatile long curfbgain;
-//     AD converter stuff
-int which_adc;
-unsigned long sinevalue;
-volatile unsigned long final_phase_fm_fb_pm;
-volatile unsigned long final_phase_fmpm;
-volatile unsigned long final_phase_fm_feedback;
-volatile long dac1la, dac1lb;
-volatile long phase_shift;
-volatile long phaselowpass;
-volatile char oldhardsync;
-
 static unsigned int dma_eng_addr;
 
 volatile unsigned int cvdata[16] __attribute__ ((space(dma),aligned(256)));
-volatile unsigned adc_data;
-volatile unsigned adc_chan;
 
+#define CVDATA_FB        1
+#define CVDATA_FM        2
+#define CVDATA_PM        3
+#define CVDATA_PMKNOB    4
+#define CVDATA_FMKNOB    5
+#define CVDATA_FBKNOB    6
+#define CVDATA_PITCH     7
+#define CVDATA_PITCHKNOB 8
 
-#define cvpitch (cvdata[7]) //was 0 TIMO EDIT
-#define cvfb (cvdata[1])
-#define cvfm (cvdata[2])
-#define cvpm (cvdata[3])
-#define cvpmknob (cvdata[4])
-#define cvfmknob (cvdata[5])
-#define cvfbknob (cvdata[6])
-#define cvpitchknob (cvdata[8])   //was 0 and before that 7 TIMO EDIT
+// Pins
+#define LFOSWITCH           PORTAbits.RA8
+#define RESOLUTIONSWITCH    PORTBbits.RB4
+#define SAMPLESWITCH        PORTAbits.RA4
+#define SYNC_IN             PORTAbits.RA9
+#define TESTPOINT1          PORTCbits.RC6
+#define TESTPOINT2          PORTCbits.RC7
+#define TESTPOINT3          PORTCbits.RC8
 
-#define ADC_FIRST (0)
-#define ADC_LAST (7)
 #define PBUF_LEN 4096
-
-
-//     Test point defines
-#define TESTPOINT1 PORTCbits.RC6
-#define TESTPOINT2 PORTCbits.RC7
-#define TESTPOINT3 PORTCbits.RC8
 
 //   Unless we use __attribute__ ((far)) we would need to use large memory model for this to work.
 __attribute__ ((far)) unsigned int pbuf [PBUF_LEN];   
-volatile unsigned pbindex = 0;
 
-#define SYNC_IN (PORTAbits.RA9)
 
 #include "wavetable.h"
-
 
 void __attribute__((__interrupt__,__auto_psv__)) _DAC1LInterrupt(void)
 {
 }
 
+// Variables that cross interrupt/non-interrupt contexts.
+unsigned long curbasephase; 
+long phaseincr;
+
+
 void __attribute__((__interrupt__,__auto_psv__)) _DAC1RInterrupt(void)
 {
+    
+    static long old_cvpm, older_cvpm;
+    static unsigned pbindex = 0;
+
     IFS4bits.DAC1RIF = 0;             //    clear the interrupt
     TESTPOINT2 = 1;                   //   show we're in DAC1RInterrupt
 
+    unsigned cvfb = cvdata[CVDATA_FB];
+    unsigned cvfbknob = cvdata[CVDATA_FBKNOB];
     {
         pbuf[pbindex] = (((unsigned long) 4095) - cvfb) ;
         if (PORTAbits.RA9 == 0) {pbindex++; };   // is SYNC / FREEZE on or off? ///TIMO edit  RB9->RA9
         if (pbindex >= PBUF_LEN) pbindex = 0;
     }
     
-    curbasephase = curbasephase + curpitchincr ;
-    curbasephase = curbasephase + curfreqmod;
+    curbasephase += phaseincr;
 
-    sinevalue = SAMPLESWITCH ? 
+    unsigned long sinevalue = SAMPLESWITCH ? 
          pbuf[0x00000FFF & (curbasephase >> 20)]
         : sine_table [0x00000FFF & (curbasephase >> 20)] ;
 
 
-    final_phase_fm_feedback = 0x00000FFF &
+    unsigned long final_phase_fm_feedback = 0x00000FFF &
                     (
                         (
                             (curbasephase >> 20)    //  native base phase
                                 +                       // plus operator feedback - FB jack is also sample in
-                            //(((sinevalue - 32767 ) * curfbgain )>> 12 ) 
                             (((sinevalue - 32767 ) *
                                 ((((long) (SAMPLESWITCH ? 4096 
                                                    : (4095 - cvfb)) * cvfbknob)>> 12 ))
-                                ) >> 12 )//  (((long)cvfb * cvfbknob)) >> 12))
+                                ) >> 12 )
                          )
                     );
 
+    // FM Output
+    DAC1RDAT = sine_table [0x00000FFF & final_phase_fm_feedback];
+
+    static long cvpm_predicted = 0;
+    unsigned cvpm = cvdata[CVDATA_PM];
+    unsigned cvpmknob = cvdata[CVDATA_PMKNOB];
+    
     if (cvpm != old_cvpm)
     {
         older_cvpm = old_cvpm;
@@ -145,29 +131,24 @@ void __attribute__((__interrupt__,__auto_psv__)) _DAC1RInterrupt(void)
         cvpm_predicted = (cvpm_predicted + old_cvpm) >> 1;   // use this for 26.4 KHz max freq 
     }
     
-    curphasemod = (( (long)2047 - cvpm_predicted) * cvpmknob) >> 10;
-    curresolution = ((cvpmknob) * ((long)4095 - cvpm)) >> 12;  // works jack goes +-5 
+    long curphasemod = RESOLUTIONSWITCH ? 0 : (( 2047L - cvpm_predicted) * cvpmknob) >> 10;
+    long curaltphasemod = (( (long)2047 - cvpm) * cvpmknob) + 256;
+    
+    unsigned long final_phase_fm_fb_pm = 0x00000FFF & (final_phase_fm_feedback + curphasemod);
 
-    final_phase_fm_fb_pm = 0x00000FFF &
-                    (
-                         // native base phase
-                             final_phase_fm_feedback
-                            +
-                             (RESOLUTIONSWITCH ?  0 : curphasemod)
-                    );
-
-    DAC1RDAT = sine_table [0x00000FFF & final_phase_fm_feedback];
-
-    unsigned int fpffpp, dist1, dist2;
-    fpffpp = 0xfff & (final_phase_fm_fb_pm + 2048);
-    dist1 = (abs (final_phase_fm_fb_pm - pbindex));
-    dist1 = (dist1 ) > 256 ?  16 : (dist1 >> 4);
-    dist2 = 16 - dist1;
-    dac1la = SAMPLESWITCH ?  
-            pbuf [final_phase_fm_fb_pm] * dist1  // was enabled
-            + pbuf [fpffpp] * dist2  //  was enabled 
-            : sine_table [0X00000fff & (final_phase_fm_fb_pm)];
-            
+    long dac1la;
+    if (SAMPLESWITCH) {
+        unsigned int fpffpp, dist1, dist2;
+        fpffpp = 0xfff & (final_phase_fm_fb_pm + 2048);
+        dist1 = (abs (final_phase_fm_fb_pm - pbindex));
+        dist1 = (dist1 ) > 256 ?  16 : (dist1 >> 4);
+        dist2 = 16 - dist1;
+        dac1la = pbuf[final_phase_fm_fb_pm] * dist1  +  pbuf[fpffpp] * dist2;
+    } else {
+        dac1la = sine_table[0X00000fff & (final_phase_fm_fb_pm)];
+    }
+  
+    if (RESOLUTIONSWITCH)
     {
         //   DANGER DANGER DANGER!!!  Use muldiv decimation only with DAC dividers 
         //   of 6 or greater!   Otherwise, the interrupt cannot keep up with the
@@ -176,34 +157,37 @@ void __attribute__((__interrupt__,__auto_psv__)) _DAC1RInterrupt(void)
 
         //   Next step:  decimation / resolution reduction - uses integer divide
         //   then multiply by same amount to reduce the resolution.
-        dac1lb = (((dac1la - 32768) / ((curaltphasemod)>> 8))
+        long dac1lb = (((dac1la - 32768) / ((curaltphasemod)>> 8))
                 * ((curaltphasemod)>>8))
                 + 32768;
+        DAC1LDAT = dac1lb;  // FM + PM Output
+    } else {
+        DAC1LDAT = dac1la;  // FM + PM Output
     }
-    DAC1LDAT =  RESOLUTIONSWITCH ? dac1lb : dac1la;
-   
     
     //   Hard sync out - tried doing this in base loop, too much jitter.  
     //    Even here, there's a lag of about 0.2 millisecond in the DAC path
     //    due to the 256x oversampling versus the direct path here for SYNC OUT
     //    Note that Hard Sync IN changes if we're in granular/sampling mode to
     //    become _FREEZE_INPUT_SAMPLES_
-    if (SAMPLESWITCH)
-    {  PORTBbits.RB8 = pbindex < 0x000000FF; }
+    if (SAMPLESWITCH)  
+        PORTBbits.RB8 = pbindex < 0x000000FF;
     else
-    {  PORTBbits.RB8 =  final_phase_fm_feedback > 0x00000800; }
+        PORTBbits.RB8 =  final_phase_fm_feedback > 0x00000800;
     
     
     TESTPOINT2 = 0;
     return;
-
 }
+
 
 
 int main(int argc, char** argv) 
 {
 
-       // Configure Oscillator to operate the device at 40MIPS
+    static int oldhardsync;
+
+    // Configure Oscillator to operate the device at 40MIPS
     // Fosc= Fin*M/(N1*N2), Fcy=Fosc/2
     // Fosc= 7.37M*43/(2*2)=79.22Mhz for ~40MIPS input clock
 
@@ -388,10 +372,6 @@ int main(int argc, char** argv)
             cvdata[i] = 0;
     }
 
-    //   Zero the buffer index for starters.
-    pbindex = 0;
-    cvpm_errpredmult = 0;
-
     IEC4bits.DAC1RIE = 1;      //  enable the right channel DAC FIFO interrupt
     IPC19bits.DAC1RIP = 5;     //  set the FIFO interrupt priority (7 is max)
 
@@ -406,12 +386,12 @@ int main(int argc, char** argv)
         TRISBbits.TRISB5 = 0x7FF < (0x00000FFF & (curbasephase >> 20 ));
 
 
-        curpitchval = cvpitchknob + ((long)2047 - cvpitch) ;
+        long curpitchval = cvdata[CVDATA_PITCHKNOB] + ((long)2047 - cvdata[CVDATA_PITCH]);
         
         //   use exp_table to get exp freq resp, or if RA8 (aka FLOSWITCH) is turned off
         //   then we're in LFO mode and we use the value rightshifted 12 bits (very low
         //   frequency).
-        curpitchincr = LFOSWITCH ?
+        long pitchincr = LFOSWITCH ?
             ((exp_table [
               (curpitchval < 0) ? 0 :
                 (curpitchval > 0x00000FFF) ? 0x00000FFF : curpitchval]) >> 12)
@@ -421,23 +401,29 @@ int main(int argc, char** argv)
                 (curpitchval > 0x00000FFF) ? 0x00000FFF : curpitchval]);
 
 
-        curfreqmod = cvfmknob * (((long)2047) - cvfm) << 6;
+        long freqmod = cvdata[CVDATA_FMKNOB] * (((long)2047) - cvdata[CVDATA_FM]) << 6;
+        
+        __builtin_disi(0x3FFF); // Non-atomically setting variable used by interrupt handler.
+        phaseincr = pitchincr + freqmod;
+        __builtin_disi(0x0000);
 
         //    Output RB6 high if we have negative frequency.  Note because
         //    of capacitance issues, we ALWAYS have RB6 on, but rather
         //    just turn on and off the tristate (TRISbits) for RB6
         PORTBbits.RB6 = 1;
-        TRISBbits.TRISB6 = curpitchincr + curfreqmod < 0 ? 0 : 1;
+        TRISBbits.TRISB6 = phaseincr < 0 ? 0 : 1;
 
-        curphasemod = ((((long)2047 - cvpm) * cvpmknob) >> 10);
+        // TODO: curphasemod is already calculated in the interrupt routine.
+        unsigned cvpm = cvdata[CVDATA_PM];
+        unsigned cvpmknob = cvdata[CVDATA_PMKNOB];
+        long curphasemod = ((((long)2047 - cvpm) * cvpmknob) >> 10);
 
-        curaltphasemod = (( (long)2047 - cvpm) * cvpmknob) + 256;
 
         //   Output RB7 driven high if we have negative phase.   Note that
         //   because of capacitance issues, we can't just output the bit; we
         //   have to change the tristate (TRISbits) to hi-Z the output.
         PORTBbits.RB7 = 1;
-        TRISBbits.TRISB7 = curpitchincr + (curphasemod << 13) < 0 ? 0 : 1 ;
+        TRISBbits.TRISB7 = pitchincr + (curphasemod << 13) < 0 ? 0 : 1 ;
 
 
         //   Do we have a HARD SYNC IN request on pin RB9?
@@ -447,15 +433,15 @@ int main(int argc, char** argv)
         {
             if (oldhardsync == 0)
             {
+                __builtin_disi(0x3FFF); // Non-atomically setting variable used by interrupt handler.
                 curbasephase = 0;
+                __builtin_disi(0x0000);
                 oldhardsync = 1;
             }
         }
         else
             oldhardsync = 0;
 
-
-        curfbgain = ((4095 - cvfb) * cvfbknob) >> 12;
     }
 }
 
