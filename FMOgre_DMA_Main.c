@@ -290,7 +290,7 @@ int main(int argc, char** argv)
     //      5          26041.6666
     //      6          22321.42857
     
-    #define MY_DACFDIV  3
+    #define MY_DACFDIV  2
     
     DAC1CONbits.DACFDIV = MY_DACFDIV; 
     DAC1STAT = 0xFFFF;        //  everything on
