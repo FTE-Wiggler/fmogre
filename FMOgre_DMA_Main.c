@@ -197,14 +197,9 @@ int main(int argc, char** argv)
 
     //   Set up aux oscillator channel
     ACLKCONbits.SELACLK = 0;    //   Aux oscillator from Main Fosc;
-    ACLKCONbits.APSTSCLR = 6;   //  was 6: Divide by 2 - gets 20 MHz to the DAC;
+    ACLKCONbits.APSTSCLR = 6;   //  was 6: Divide by 2 - gets 40 MHz to the DAC;
                                 //  use 6 to get 83333 hz DAC output rate (measured @ 40 MHz inst)
     ACLKCONbits.ASRCSEL = 0;    //    use primary clock as source (but doesn't matter)
-
-    long int quantum;
-    
-                     //  0x1 = ~ 1/15 Hz (1 cycle per 15 seconds)
-    quantum = 0x2400;   //  0x24000 = ~ 10 KHz; 0x35000 =~ 15 KHz
 
 
     //   Set up which pins are digital in and out
@@ -249,23 +244,23 @@ int main(int argc, char** argv)
     DAC1CONbits.DACEN = 1;    // enable the audio dac
     DAC1CONbits.AMPON = 1;    // enable the output amplifier
     DAC1CONbits.FORM = 0;     //  unsigned data (0 = unsigned data)
-    //
-    //    CHANGE THE DACFDIV TO CHANGE OUTPUT SAMPLING SPEED!!!
-    //     The following pitch-DACFDIV values are relative, of course.
-    //    (Note, this is not sample RATE.  This is sine wave rendered)
-    //    8 = 14.7 KHz max pitch
-    //    7 = 16.5 KHz max pitch
-    //    6 = 18.9 KHz max pitch, 50 KHz phase update, fastest for MULDIV 
-    //    5 = 22.0 KHz max pitch, 50 KHz phase update
-    //    4 = 26.4 KHz max pitch, 50 KHz phase update
-    //    3 = 33.0 KHz max pitch, 33 KHz phase update
-    //    2 = 44.07 kHz max pitch, 28 KHz phase update 
-    //    1 .... antialias malfunction.  Don't use this.
-    //    To be honest, it sounds really good at either 3 or 4 to me if you want
-    //    dogs to hear it, and just fine at 6, which allows MULDIV-decimation.
     
-    DAC1CONbits.DACFDIV = 6;  // (was 3, then 6, then 8) divide Fosc to drive 
-                              //  interpolator. 3 = 83.333KHz @40MIPS
+    //
+    //    CHANGE THE DACFDIV TO CHANGE SAMPLING RATE
+    //        Fs = Fcy / (256 * (DACFDIV + 1))
+    //
+    //    DACFDIV      Fs
+    //    ------------------
+    //      1          78125
+    //      2          52083.3333
+    //      3          39062.5000
+    //      4          31250
+    //      5          26041.6666
+    //      6          22321.42857
+    
+    #define MY_DACFDIV  6
+    
+    DAC1CONbits.DACFDIV = MY_DACFDIV; 
     DAC1STAT = 0xFFFF;        //  everything on
     DAC1STATbits.LITYPE = 1;  // 0 means interrupt on Left LIFO not full
     DAC1STATbits.RITYPE = 1;  // 0 means interrupt on Right LIFO not full
@@ -345,8 +340,17 @@ int main(int argc, char** argv)
     //PR3 = 250;                 // 250 = prescale to 160 KHz
     //PR3 = 200;                  //  200 = prescale to 200 KHz
     //PR3 = 150;
-    PR3 = 100;                 // 100 = prescale to 400 KHz
+    //PR3 = 100;                 // 100 = prescale to 400 KHz
     //PR3 = 80;                  //  80 = prescale to 500 KHz  (maximum rated)
+    
+    // TO SAMPLE SYNCHRONOUSLY WITH THE DAC:
+    //        * assuming we have set the DAC oscillator to be Fcy (40 MHz)
+    //        * then the DAC division factor is given by (DACFDIV+1) * 256
+    //        * since we are sampling 8 inputs, we want to use (DACFDIV+1) * 256/8
+    //        * set the period register to 1 less than the desired divider
+    //        * eg: PR3 = (DACFDIV+1) * 32 - 1 
+    PR3 = (MY_DACFDIV+1) * 32 - 1;
+    
     T3CONbits.TSIDL = 0;       // keep timing in idle
     IFS0bits.T3IF = 0;         // Clear T3 interrupt
     IEC0bits.T3IE = 0;         // Disable T3 interrupt
