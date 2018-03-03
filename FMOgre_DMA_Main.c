@@ -413,22 +413,23 @@ int main(int argc, char** argv)
         TRISBbits.TRISB5 = 0x7FF < (0x00000FFF & (curbasephase >> 20 ));
 
 
-        long curpitchval = cvdata[CVDATA_PITCHKNOB] + ((long)2047 - cvdata[CVDATA_PITCH]);
+        int curpitchval = cvdata[CVDATA_PITCHKNOB] + (2047 - cvdata[CVDATA_PITCH]);
+		if (curpitchval < 0)
+			curpitchval = 0;
+		else if (curpitchval > 4095)
+			curpitchval = 4095;
         
         //   use exp_table to get exp freq resp, or if RA8 (aka FLOSWITCH) is turned off
         //   then we're in LFO mode and we use the value rightshifted 12 bits (very low
         //   frequency).
-        long pitchincr = LFOSWITCH ?
-            ((exp_table [
-              (curpitchval < 0) ? 0 :
-                (curpitchval > 0x00000FFF) ? 0x00000FFF : curpitchval]) >> 12)
-            :
-            (exp_table [
-              (curpitchval < 0) ? 0 :
-                (curpitchval > 0x00000FFF) ? 0x00000FFF : curpitchval]);
+		long pitchincr = exp_table[curpitchval]; // 31 bit
+		if (LFOSWITCH)
+			pitchincr = pitchincr >> 12;
+			
 
-
-        long freqmod = cvdata[CVDATA_FMKNOB] * (((long)2047) - cvdata[CVDATA_FM]) << 6;
+		int fm_jack = 2047 - cvdata[CVDATA_FM];
+		long freqmod = (long)fm_jack * (int)(cvdata[CVDATA_FMKNOB]);  // max 8387000 or 24 bits
+		freqmod = (freqmod >> 8) * (pitchincr >> 13);  	// Scales with pitch frequency.
         
         __builtin_disi(0x3FFF); // Non-atomically setting variable used by interrupt handler.
         phaseincr = pitchincr + freqmod;
