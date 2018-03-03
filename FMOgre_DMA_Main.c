@@ -40,7 +40,8 @@ _FOSC (POSCMD_XT & OSCIOFNC_OFF & IOL1WAY_OFF & FCKSM_CSECME)
 
 static unsigned int dma_eng_addr;
 
-volatile unsigned int cvdata[16] __attribute__ ((space(dma),aligned(256)));
+// ADC data is in [0..4095]
+volatile int cvdata[16] __attribute__ ((space(dma),aligned(256)));
 
 #define CVDATA_FB        1
 #define CVDATA_FM        2
@@ -73,9 +74,11 @@ void __attribute__((__interrupt__,__auto_psv__)) _DAC1LInterrupt(void)
 }
 
 // Variables that cross interrupt/non-interrupt contexts.
-unsigned long curbasephase;     // Current oscillator phase.
+long curbasephase;     			// Current oscillator phase.
+long phaseincr_pitch;			// Includes only v/oct component.
 long phaseincr;                 // Includes v/oct and fm components.
-
+long phasemod;					// Phase modulation.
+long phasemod_last;				// Previous phase modulation.
 
 void __attribute__((__interrupt__,__auto_psv__)) _DAC1RInterrupt(void)
 {   
@@ -109,19 +112,25 @@ void __attribute__((__interrupt__,__auto_psv__)) _DAC1RInterrupt(void)
         fb_phaseshift = ((sinevalue * cvfb) >> 4) * cvfbknob;  // TODO: better precision if we can get 64 bit intermediate result.
 
 
-    unsigned long final_phase_fm_feedback = (long)curbasephase + fb_phaseshift;
+    long final_phase_fm_feedback = curbasephase + fb_phaseshift;
 
     // =================  FM Output =======================================
     DAC1RDAT = sine_table [0x00000FFF & (final_phase_fm_feedback >> 20)];
     // ===================================================================
 
-    long cvpm = 2047 - (signed)cvdata[CVDATA_PM];   // Symmetric about zero. TODO: low pass filter this.
-    long cvpmknob = cvdata[CVDATA_PMKNOB];          // Positive value.  TODO: filter the shit out of this.
-    long phasemod = RESOLUTIONSWITCH ? 0 : (cvpm * cvpmknob) << 10;
-    long altphasemod = (cvpm * cvpmknob) + 256;
-    
-    unsigned long final_phase_fm_fb_pm = final_phase_fm_feedback + phasemod;
-    unsigned long foobar = 0x00000FFF & (final_phase_fm_fb_pm >> 20);
+	phasemod_last = phasemod;
+
+    int pm_jack = 2047 - cvdata[CVDATA_PM];   // TODO: low pass filter this.
+    int pm_knob = cvdata[CVDATA_PMKNOB];      // Positive value.  TODO: filter the shit out of this.
+
+	if (RESOLUTIONSWITCH) {
+		phasemod = 0;
+	} else {
+		phasemod = ((long)pm_jack * pm_knob) << 9; // Does not need to scale with pitch frequency.
+	}
+	
+    long final_phase_fm_fb_pm = final_phase_fm_feedback + phasemod;
+    int foobar = 0x0FFF & (int)(final_phase_fm_fb_pm >> 20);
 
     long dac1la;
     if (SAMPLESWITCH) {
@@ -140,6 +149,8 @@ void __attribute__((__interrupt__,__auto_psv__)) _DAC1RInterrupt(void)
   
     if (RESOLUTIONSWITCH)
     {
+		long altphasemod = (long)pm_jack * pm_knob + 256;
+		
         //   DANGER DANGER DANGER!!!  Use muldiv decimation only with DAC dividers 
         //   of 6 or greater!   Otherwise, the interrupt cannot keep up with the
         //   demand of the DAC oversampling hardware and you'll underrun which makes
@@ -431,7 +442,8 @@ int main(int argc, char** argv)
 		long freqmod = (long)fm_jack * (int)(cvdata[CVDATA_FMKNOB]);  // max 8387000 or 24 bits
 		freqmod = (freqmod >> 8) * (pitchincr >> 13);  	// Scales with pitch frequency.
         
-        __builtin_disi(0x3FFF); // Non-atomically setting variable used by interrupt handler.
+        __builtin_disi(0x3FFF); // Non-atomically setting variables used by interrupt handler.
+		phaseincr_pitch = pitchincr;
         phaseincr = pitchincr + freqmod;
         __builtin_disi(0x0000);
 
@@ -441,17 +453,11 @@ int main(int argc, char** argv)
         PORTBbits.RB6 = 1;
         TRISBbits.TRISB6 = phaseincr < 0 ? 0 : 1;
 
-        // TODO: curphasemod is already calculated in the interrupt routine.
-        unsigned cvpm = cvdata[CVDATA_PM];
-        unsigned cvpmknob = cvdata[CVDATA_PMKNOB];
-        long curphasemod = ((((long)2047 - cvpm) * cvpmknob) >> 10);
-
-
-        //   Output RB7 driven high if we have negative phase.   Note that
+        //   Output RB7 driven high if we have negative frequency due to phase modulation. Note that
         //   because of capacitance issues, we can't just output the bit; we
         //   have to change the tristate (TRISbits) to hi-Z the output.
         PORTBbits.RB7 = 1;
-        TRISBbits.TRISB7 = pitchincr + (curphasemod << 13) < 0 ? 0 : 1 ;
+        TRISBbits.TRISB7 = (pitchincr + (phasemod - phasemod_last) < 0) ? 0 : 1 ;
 
 
         //   Do we have a HARD SYNC IN request on pin RB9?
