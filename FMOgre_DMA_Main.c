@@ -1,3 +1,75 @@
+/*     FM Ogre FTE Edition   -- Changes Copyright 2017-2018  CC-BY-SA-NC
+*
+*     - scale FM with pitch frequency
+*     - reduce phase modulation noise
+*     - general code cleanup and bug fixing
+*
+*/
+
+/*
+ * File:   FMOgre_DMA_Main.c for FMOgre_44 (44-pin surface-mount) board
+ * Author: wsy
+ *
+ * Created on August 16, 2013, 7:10 AM
+ * Updated April 18 2015, 23:52 PM
+ * Yet more mangling July 26, 2015
+ * yet more mangling September 5 2015
+ * Yet more mangling November 2015
+ * 
+ *    This file is Copyright 2013-2015 William S. Yerazunis,
+ *   It is licensed CC-BY-SA-NC
+ *
+ *   (creative commons, attribute source, share alike, no commercial
+ *    use without other license)
+ */
+
+/* edited by Timo Rozendal, all these edits are mentioned with TIMO EDIT in the comments
+ * Reasons for editing: 
+ * - sync was connected to another port on the latest design (RA9  in stead of RB9)
+ * - rerouted v/oct input to an7 to make use of the trimmer in the latest design
+ * - enabling external voltage reference (requires new edits in circuit)
+ * - using an8 for pitch knob input (was needed since an0 is used for voltage reference)
+ * 
+ * these edits still need to be incorporated in the other comments
+ */
+
+
+/*
+ *    Steps in the process:
+ *
+ *  - Initialize the IO pins:
+ *     - analog outputs:
+ *          10(DAC1RP : primary output), 11(DAC1RN), 14(DAC1LP), 15(DAC1LN) (RB12,13,14,15)
+ *     - analog inputs:
+ *          AN0 (19, RA0):  exponential pitch jack
+ *          AN1 (20, RA1):  operator feedback jack
+ *          AN2 (21, RB0):  freq mod jack
+ *          AN3 (22, RB1):  phase mod jack
+ *          AN4 (23, RB2):  phase mod index knob
+ *          AN5 (24, RB3):  fm mod index knob
+ *          AN6 (25, RC0):  operator feedback knob
+ *          AN7 (26, RC1):  pitch knob
+ *     - digital inputs:
+ *          RA2 (30):   (also crystal in)
+ *          RA3 (31):   (also crystal out)  ???  if low, use RA2 as 7.37MHz osc in ???
+ *          RA8 (32):   Switch 1 (external 100K pullup, AKA lfo switch LFOSWITCH
+ *          RB4 (33):   Switch 2 (external 100K pullup, AKA phase/resolution RESOLSWITCH
+ *          RA4 (34):   Switch 3 (external 100K pullup)
+ *          pin 17,28,40: Vdd (+3.3v)
+ *          RB5 (41): / PGED3 (5Vtol)  idle heartbeat - each Hz is ~1 MIP available
+ *          RB6 (42): / PGEC3 (5Vtol)  negative frequency
+ *          RB7 (43):         (5Vtol)  negative phase
+ *          RB8 (44):         (5Vtol)  Sync Out (25% duty cycle pulse train)
+ *          RB9  (1):         (5Vtol)  Sync In
+ *          pins 6, 16, 29, 39: Vss (ground)
+ *          pin 7: Vcap (core voltage stabilizer)
+ *          pin 21: PGED2 / RB10 (5Vtol) - used for programming
+ *          pin 22: PGEC2 / RB11 (5Vtol) - used for programming
+ *          23-26 = RP, RN, LP, and LN analog out = see above
+ *          pin 27: AVss
+ *          pin 28: AVdd
+ *
+*/
 
 
 #include <stdio.h>
