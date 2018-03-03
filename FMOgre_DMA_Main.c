@@ -73,79 +73,69 @@ void __attribute__((__interrupt__,__auto_psv__)) _DAC1LInterrupt(void)
 }
 
 // Variables that cross interrupt/non-interrupt contexts.
-unsigned long curbasephase; 
-long phaseincr;
+unsigned long curbasephase;     // Current oscillator phase.
+long phaseincr;                 // Includes v/oct and fm components.
 
 
 void __attribute__((__interrupt__,__auto_psv__)) _DAC1RInterrupt(void)
-{
-    
-    static long old_cvpm, older_cvpm;
+{   
     static unsigned pbindex = 0;
 
     IFS4bits.DAC1RIF = 0;             //    clear the interrupt
     TESTPOINT2 = 1;                   //   show we're in DAC1RInterrupt
 
-    unsigned cvfb = cvdata[CVDATA_FB];
-    unsigned cvfbknob = cvdata[CVDATA_FBKNOB];
+    long cvfb = 4095 - cvdata[CVDATA_FB];           // Still positive value.
+    long cvfbknob = cvdata[CVDATA_FBKNOB];          // Positive value.
+    
     {
-        pbuf[pbindex] = (((unsigned long) 4095) - cvfb) ;
+        pbuf[pbindex] = cvfb;
         if (PORTAbits.RA9 == 0) {pbindex++; };   // is SYNC / FREEZE on or off? ///TIMO edit  RB9->RA9
         if (pbindex >= PBUF_LEN) pbindex = 0;
     }
     
     curbasephase += phaseincr;
 
-    unsigned long sinevalue = SAMPLESWITCH ? 
+    long sinevalue = SAMPLESWITCH ? 
          pbuf[0x00000FFF & (curbasephase >> 20)]
         : sine_table [0x00000FFF & (curbasephase >> 20)] ;
 
+    sinevalue -= 32767; // Shift to be symmetric about zero.
 
-    unsigned long final_phase_fm_feedback = 0x00000FFF &
-                    (
-                        (
-                            (curbasephase >> 20)    //  native base phase
-                                +                       // plus operator feedback - FB jack is also sample in
-                            (((sinevalue - 32767 ) *
-                                ((((long) (SAMPLESWITCH ? 4096 
-                                                   : (4095 - cvfb)) * cvfbknob)>> 12 ))
-                                ) >> 12 )
-                         )
-                    );
-
-    // FM Output
-    DAC1RDAT = sine_table [0x00000FFF & final_phase_fm_feedback];
-
-    static long cvpm_predicted = 0;
-    unsigned cvpm = cvdata[CVDATA_PM];
-    unsigned cvpmknob = cvdata[CVDATA_PMKNOB];
+    long fb_phaseshift;
     
-    if (cvpm != old_cvpm)
-    {
-        older_cvpm = old_cvpm;
-        cvpm_predicted = older_cvpm;
-        old_cvpm = cvpm;
-    }    
+    if (SAMPLESWITCH)
+        fb_phaseshift = sinevalue * 4096;
     else
-    { 
-        cvpm_predicted = (cvpm_predicted + old_cvpm) >> 1;   // use this for 26.4 KHz max freq 
-    }
+        fb_phaseshift = ((sinevalue * cvfb) >> 4) * cvfbknob;  // TODO: better precision if we can get 64 bit intermediate result.
+
+
+    unsigned long final_phase_fm_feedback = (long)curbasephase + fb_phaseshift;
+
+    // =================  FM Output =======================================
+    DAC1RDAT = sine_table [0x00000FFF & (final_phase_fm_feedback >> 20)];
+    // ===================================================================
+
+    long cvpm = 2047 - (signed)cvdata[CVDATA_PM];   // Symmetric about zero. TODO: low pass filter this.
+    long cvpmknob = cvdata[CVDATA_PMKNOB];          // Positive value.  TODO: filter the shit out of this.
+    long phasemod = RESOLUTIONSWITCH ? 0 : (cvpm * cvpmknob) << 8;
+    long altphasemod = (cvpm * cvpmknob) + 256;
     
-    long curphasemod = RESOLUTIONSWITCH ? 0 : (( 2047L - cvpm_predicted) * cvpmknob) >> 10;
-    long curaltphasemod = (( (long)2047 - cvpm) * cvpmknob) + 256;
-    
-    unsigned long final_phase_fm_fb_pm = 0x00000FFF & (final_phase_fm_feedback + curphasemod);
+    unsigned long final_phase_fm_fb_pm = final_phase_fm_feedback + phasemod;
+    unsigned long foobar = 0x00000FFF & (final_phase_fm_fb_pm >> 20);
 
     long dac1la;
     if (SAMPLESWITCH) {
         unsigned int fpffpp, dist1, dist2;
-        fpffpp = 0xfff & (final_phase_fm_fb_pm + 2048);
-        dist1 = (abs (final_phase_fm_fb_pm - pbindex));
+        fpffpp = 0xfff & (foobar + 2048);
+        dist1 = (abs (foobar - pbindex));
         dist1 = (dist1 ) > 256 ?  16 : (dist1 >> 4);
         dist2 = 16 - dist1;
-        dac1la = pbuf[final_phase_fm_fb_pm] * dist1  +  pbuf[fpffpp] * dist2;
+        dac1la = pbuf[foobar] * dist1  +  pbuf[fpffpp] * dist2;
     } else {
-        dac1la = sine_table[0X00000fff & (final_phase_fm_fb_pm)];
+        dac1la = sine_table[foobar];
+        
+        // TEST CODE -- this shows there is noise in the ADC conversion.
+        //dac1la = ((cvpm+2047) * cvpmknob) >> 8;
     }
   
     if (RESOLUTIONSWITCH)
@@ -157,8 +147,8 @@ void __attribute__((__interrupt__,__auto_psv__)) _DAC1RInterrupt(void)
 
         //   Next step:  decimation / resolution reduction - uses integer divide
         //   then multiply by same amount to reduce the resolution.
-        long dac1lb = (((dac1la - 32768) / ((curaltphasemod)>> 8))
-                * ((curaltphasemod)>>8))
+        long dac1lb = (((dac1la - 32768) / ((altphasemod)>> 8))
+                * ((altphasemod)>>8))
                 + 32768;
         DAC1LDAT = dac1lb;  // FM + PM Output
     } else {
@@ -173,7 +163,7 @@ void __attribute__((__interrupt__,__auto_psv__)) _DAC1RInterrupt(void)
     if (SAMPLESWITCH)  
         PORTBbits.RB8 = pbindex < 0x000000FF;
     else
-        PORTBbits.RB8 =  final_phase_fm_feedback > 0x00000800;
+        PORTBbits.RB8 =  final_phase_fm_feedback > 0x80000000UL;
     
     
     TESTPOINT2 = 0;
