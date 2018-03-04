@@ -2,6 +2,7 @@
 *
 *     - scale FM with pitch frequency
 *     - reduce phase modulation noise
+*     - reduction in module power consumption (was 80, now 60mA on +12V)
 *     - general code cleanup and bug fixing
 *
 */
@@ -159,8 +160,8 @@ void __attribute__((__interrupt__,__auto_psv__)) _DAC1RInterrupt(void)
     IFS4bits.DAC1RIF = 0;             //    clear the interrupt
     TESTPOINT2 = 1;                   //   show we're in DAC1RInterrupt
 
-    long cvfb = 4095 - cvdata[CVDATA_FB];           // Still positive value.
-    long cvfbknob = cvdata[CVDATA_FBKNOB];          // Positive value.
+    int cvfb = 4095 - cvdata[CVDATA_FB];         // Still positive value.
+    int cvfbknob = cvdata[CVDATA_FBKNOB];        // Positive value.
     
     {
         pbuf[pbindex] = cvfb;
@@ -194,50 +195,41 @@ void __attribute__((__interrupt__,__auto_psv__)) _DAC1RInterrupt(void)
 
     int pm_jack = 2047 - cvdata[CVDATA_PM];   // TODO: low pass filter this.
     int pm_knob = cvdata[CVDATA_PMKNOB];      // Positive value.  TODO: filter the shit out of this.
+	int res_shift;
 
 	if (RESOLUTIONSWITCH) {
 		phasemod = 0;
+		res_shift = ((long)pm_jack * pm_knob) >> 19;
+		if (res_shift < 0)
+			res_shift = -res_shift;
 	} else {
 		phasemod = ((long)pm_jack * pm_knob) << 9; // Does not need to scale with pitch frequency.
+		res_shift = 0;
 	}
 	
     long final_phase_fm_fb_pm = final_phase_fm_feedback + phasemod;
     int foobar = 0x0FFF & (int)(final_phase_fm_fb_pm >> 20);
 
-    long dac1la;
+    long dacdat;
+	
     if (SAMPLESWITCH) {
         unsigned int fpffpp, dist1, dist2;
         fpffpp = 0xfff & (foobar + 2048);
         dist1 = (abs (foobar - pbindex));
         dist1 = (dist1 ) > 256 ?  16 : (dist1 >> 4);
         dist2 = 16 - dist1;
-        dac1la = pbuf[foobar] * dist1  +  pbuf[fpffpp] * dist2;
+        dacdat  = pbuf[foobar] * dist1  +  pbuf[fpffpp] * dist2;
     } else {
-        dac1la = sine_table[foobar];
-        
-        // TEST CODE -- this shows there is noise in the ADC conversion.
-        //dac1la = ((cvpm+2047) * cvpmknob) >> 8;
+        dacdat  = sine_table[foobar];        
     }
   
-    if (RESOLUTIONSWITCH)
-    {
-		long altphasemod = (long)pm_jack * pm_knob + 256;
-		
-        //   DANGER DANGER DANGER!!!  Use muldiv decimation only with DAC dividers 
-        //   of 6 or greater!   Otherwise, the interrupt cannot keep up with the
-        //   demand of the DAC oversampling hardware and you'll underrun which makes
-        //   lots of negative-going pulses.  Not A Good Thing!
-
-        //   Next step:  decimation / resolution reduction - uses integer divide
-        //   then multiply by same amount to reduce the resolution.
-        long dac1lb = (((dac1la - 32768) / ((altphasemod)>> 8))
-                * ((altphasemod)>>8))
-                + 32768;
-        DAC1LDAT = dac1lb;  // FM + PM Output
-    } else {
-        DAC1LDAT = dac1la;  // FM + PM Output
-    }
-    
+	if (res_shift)
+		dacdat = (((dacdat - 32768) >> res_shift) << res_shift) + 32768;
+	
+    // =================  FM+PM Output ====================================
+	DAC1LDAT = dacdat ;
+    // ===================================================================
+	    
     //   Hard sync out - tried doing this in base loop, too much jitter.  
     //    Even here, there's a lag of about 0.2 millisecond in the DAC path
     //    due to the 256x oversampling versus the direct path here for SYNC OUT
